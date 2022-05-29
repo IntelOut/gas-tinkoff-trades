@@ -1,18 +1,12 @@
-/** @OnlyCurrentDoc */
-
-const scriptProperties = PropertiesService.getScriptProperties()
-const OPENAPI_TOKEN = scriptProperties.getProperty('OPENAPI_TOKEN')
-
-const CACHE = CacheService.getScriptCache()
-const CACHE_MAX_AGE = 21600 // 6 Hours
-
-const TRADING_START_AT = new Date('Apr 01, 2020 10:00:00')
+const OPENAPI_TOKEN = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Служебная").getRange("D2").getValue()
+const TRADING_START_AT = new Date('Jan 01, 2019 10:00:00')
 const MILLIS_PER_DAY = 1000 * 60 * 60 * 24
 
-/**
- * Добавляет меню с командой вызова функции обновления значений служебной ячейки (для обновления вычислнений функций, ссылающихся на эту ячейку)
- *
- **/
+function isoToDate(dateStr){
+  const str = dateStr.replace(/-/,'/').replace(/-/,'/').replace(/T/,' ').replace(/\+/,' \+').replace(/Z/,' +00')
+  return new Date(str)
+}
+    
 function onOpen() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet()
   var entries = [{
@@ -23,25 +17,16 @@ function onOpen() {
 };
 
 function refresh() {
-  SpreadsheetApp.getActiveSpreadsheet().getRange('Z1').setValue(new Date());
-}
-
-function isoToDate(dateStr){
-  // How to format date string so that google scripts recognizes it?
-  // https://stackoverflow.com/a/17253060
-  const str = dateStr.replace(/-/,'/').replace(/-/,'/').replace(/T/,' ').replace(/\+/,' \+').replace(/Z/,' +00')
-  return new Date(str)
+  SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Служебная").getRange('D3').setValue(new Date().toTimeString());
 }
 
 class TinkoffClient {
-  // Doc: https://tinkoffcreditsystems.github.io/invest-openapi/swagger-ui/
-  // How to create a token: https://tinkoffcreditsystems.github.io/invest-openapi/auth/
-  constructor(token) {
+  constructor(token){
     this.token = token
     this.baseUrl = 'https://api-invest.tinkoff.ru/openapi/'
+//    this.baseUrl = 'https://invest-public-api.tinkoff.ru/rest/'
   }
-  
-  _makeApiCall(methodUrl) {
+  _makeApiCall(methodUrl){
     const url = this.baseUrl + methodUrl
     Logger.log(`[API Call] ${url}`)
     const params = {'escaping': false, 'headers': {'accept': 'application/json', "Authorization": `Bearer ${this.token}`}}
@@ -49,107 +34,96 @@ class TinkoffClient {
     if (response.getResponseCode() == 200)
       return JSON.parse(response.getContentText())
   }
-  
-  getInstrumentByTicker(ticker) {
+  getFIGIbyTicker(ticker){
     const url = `market/search/by-ticker?ticker=${ticker}`
     const data = this._makeApiCall(url)
-    return data.payload
+    return data.payload.instruments[0].figi
   }
-  
-  getOrderbookByFigi(figi, depth) {
-    const url = `market/orderbook?depth=${depth}&figi=${figi}`
+  getInstrumentByFigi(figi){
+    const url = `market/search/by-figi?figi=${figi}`
     const data = this._makeApiCall(url)
     return data.payload
   }
-  
-  getOperations(from, to, figi) {
-    // Arguments `from` && `to` should be in ISO 8601 format
+  getTickerByFigi(figi){
+    const url = `market/search/by-figi?figi=${figi}`
+    const data = this._makeApiCall(url)
+    return data.payload.ticker
+  }
+  getOrderbookByFigi(figi){
+    const url = `market/orderbook?depth=1&figi=${figi}`
+    const data = this._makeApiCall(url)
+    return data.payload
+  }
+  getOperations(from, to, figi){
+    // Аргументы `from` и `to` должны быть в ISO 8601 формате
     const url = `operations?from=${from}&to=${to}&figi=${figi}`
     const data = this._makeApiCall(url)
     return data.payload.operations
   }
-
-  getPortfolio(){
+  getAll (from, to) {
+    const url = `operations?from=${from}&to=${to}`
+    const data = this._makeApiCall(url)
+    return data.payload.operations
+  }
+  getAllIIS (from, to, IISid) {
+    const url = `operations?from=${from}&to=${to}&brokerAccountId=${IISid}`
+    const data = this._makeApiCall(url)
+    return data.payload.operations
+  }
+  getPort(){
     const url = `portfolio`
     const data = this._makeApiCall(url)
     return data.payload.positions
   }
-}
-
-const tinkoffClient = new TinkoffClient(OPENAPI_TOKEN)
-
-function _getFigiByTicker(ticker) {
-  const CACHE_KEY_PREFIX = 'figi_'
-  const ticker_cache_key = CACHE_KEY_PREFIX + ticker
-
-  const cached = CACHE.get(ticker)
-  if (cached != null) 
-    return cached
-  const {instruments,total} = tinkoffClient.getInstrumentByTicker(ticker)
-  if (total > 0) {
-    const figi = instruments[0].figi
-    CACHE.put(ticker_cache_key, figi, CACHE_MAX_AGE)
-    return figi
-  } else {
-    return null
+  getCur(){
+    const url = `portfolio/currencies`
+    const data = this._makeApiCall(url)
+    return data.payload.currencies
+  }
+  getIIS(IISid){
+    const url = `portfolio?brokerAccountId=${IISid}`
+    const data = this._makeApiCall(url)
+    return data.payload.positions
+  }
+  getIISid(){
+    const url = `user/accounts`
+    const data = this._makeApiCall(url)
+    return data.payload.accounts
+  }
+  usdval(){
+    const url = `market/orderbook?figi=BBG0013HGFT4&depth=1`
+    const data = this._makeApiCall(url)
+    return data.payload.lastPrice
+  }
+  eurval(){
+    const url = `market/orderbook?figi=BBG0013HJJ31&depth=1`
+    const data = this._makeApiCall(url)
+    return data.payload.lastPrice
+  }
+  getinfo(){
+    const url = `tinkoff.public.invest.api.contract.v1.UserServices/GetInfo`
+    const data = this._makeApiCall(url)
+    return data.payload.accounts
   }
 }
 
-/**
- * Получение последней цены инструмента по тикеру
- * @param {"GAZP"} ticker Тикер инструмента
- * @return {}             Last price
- * @customfunction
- */
-function getPriceByTicker(ticker, dummy) {
-  // dummy attribute uses for auto-refreshing the value each time the sheet is updating.
-  // see https://stackoverflow.com/a/27656313
-  const figi = _getFigiByTicker(ticker)
-  const {lastPrice} = tinkoffClient.getOrderbookByFigi(figi, 1)
+const tinkoffClient = new TinkoffClient(OPENAPI_TOKEN)
+const CACHE = CacheService.getScriptCache()
+
+function getPrice(ticker, refresh){
+  const figi = tinkoffClient.getFIGIbyTicker(ticker)
+  var {lastPrice} = tinkoffClient.getOrderbookByFigi(figi)
   return lastPrice
 }
 
-/**
- * Получение Bid/Ask спреда инструмента по тикеру
- * @param {"GAZP"} ticker Тикер инструмента
- * @return {0.03}         Спред в %
- * @customfunction
- */
-function getBidAskSpreadByTicker(ticker) { // dummy parameter is optional
-  const figi = _getFigiByTicker(ticker)
-  const {tradeStatus,bids,asks} = tinkoffClient.getOrderbookByFigi(figi, 1)
-  if (tradeStatus != 'NotAvailableForTrading')
-    return (asks[0].price-bids[0].price) / asks[0].price
-  else
-    return null
-}
-
-function getMaxBidByTicker(ticker, dummy) {
-  // dummy attribute uses for auto-refreshing the value each time the sheet is updating.
-  // see https://stackoverflow.com/a/27656313
-  const figi = _getFigiByTicker(ticker)
-  const {tradeStatus,bids} = tinkoffClient.getOrderbookByFigi(figi, 1)
-  if (tradeStatus != 'NotAvailableForTrading')
-    return [
-    ["Max bid", "Quantity"],
-    [bids[0].price, bids[0].quantity]
-    ]
-  else
-    return null
-}
-
-function getMinAskByTicker(ticker, dummy) {
-  // dummy attribute uses for auto-refreshing the value each time the sheet is updating.
-  // see https://stackoverflow.com/a/27656313
-  const figi = _getFigiByTicker(ticker)
-  const {tradeStatus,asks} = tinkoffClient.getOrderbookByFigi(figi, 1)
-  if (tradeStatus != 'NotAvailableForTrading')
-    return [
-      ["Min ask", "Quantity"],
-      [asks[0].price, asks[0].quantity]
-    ]
-  else
-    return null
+function getAllTickers(figi){
+  var ticker
+  if (!figi){
+    ticker = ""
+  }else{
+    var {ticker} = tinkoffClient.getInstrumentByFigi(figi)
+  }
+  return ticker
 }
 
 function _calculateTrades(trades) {
@@ -164,16 +138,8 @@ function _calculateTrades(trades) {
   return [totalQuantity, totalSum, weigthedPrice]
 }
 
-/**
- * Получение списка операций по тикеру инструмента
- * @param {String} ticker Тикер инструмента для фильтрации
- * @param {String} from Начальная дата
- * @param {String} to Конечная дата
- * @return {Array} Массив результата
- * @customfunction
- */
 function getTrades(ticker, from, to) {
-  const figi = _getFigiByTicker(ticker)
+  const figi = tinkoffClient.getFIGIbyTicker(ticker)
   if (!from) {
     from = TRADING_START_AT.toISOString()
   }
@@ -183,51 +149,250 @@ function getTrades(ticker, from, to) {
     to = to.toISOString()
   }
   const operations = tinkoffClient.getOperations(from, to, figi)
-  
-  const values = [
-    ["ID", "Date", "Operation", "Ticker", "Quantity", "Price", "Currency", "SUM", "Commission"], 
-  ]
+  const values = []
+  var com_val
   for (let i=operations.length-1; i>=0; i--) {
-    const {operationType, status, trades, id, date, currency, commission} = operations[i]
-    if (operationType == "BrokerCommission" || status == "Decline" || operationType == "Dividend")
+    const {operationType, status, trades, date, currency, figi, commission} = operations[i]
+    if (operationType == "BrokerCommission" || status == "Decline")
       continue
-    let [totalQuantity, totalSum, weigthedPrice] = _calculateTrades(trades) // calculate weighted values
-    if (operationType == "Buy") {  // inverse values in a way, that it will be easier to work with
-      totalQuantity = -totalQuantity
-      totalSum = -totalSum
-    }
-    let com_val = 0
+    let [totalQuantity, totalSum, weigthedPrice] = _calculateTrades(trades)
     if (commission){
       com_val = commission.value
     }else{
-      com_val = null
+      com_val = "-"
     }
+    if (operationType == "Sell") {
+      totalQuantity = -totalQuantity
+      totalSum = -totalSum
+      commission.value = -commission.value
+    }
+    values.push([isoToDate(date), operationType, totalQuantity, weigthedPrice, currency, com_val])
+  }
+  return values
+}
+
+function getAllTrades(from, to, refresh){
+  if (!from){
+    from = TRADING_START_AT.toISOString()
+  }else{
+    from = from.toISOString()
+  }
+  if (!to){
+    to = new Date(new Date() + MILLIS_PER_DAY).toISOString()
+  }else{
+    to = to.toISOString()
+  }
+  const operations = tinkoffClient.getAll (from, to)
+  const values = []
+  var com_val
+  values.push(["Дата","Тикер","Тип","Кол-во","Цена за 1","Комиссия","Итого","Валюта"])
+  for (let i=operations.length-1; i>=0; i--) {
+    const {operationType, status, trades, date, currency, figi, commission, payment} = operations[i]
+    if (operationType == "BrokerCommission" || operationType == "PayIn" || operationType == "PayOut" || status == "Decline")
+      continue
+    // если нужно отобразить комиссию брокера (BrokerCommission), пополнение (PayIn) или вывод (PayOut) средств со счета, удалите ненужный вариант. Например, если Вы хотите видеть отображение вывода средств со счёта, удалите " operationType == "PayIn" ||" из строки выше
+    let [totalQuantity, totalSum, weigthedPrice] = _calculateTrades(trades)
+    if (commission){
+      com_val = -commission.value
+    }else{
+      com_val = 0
+    }
+    if (operationType == "Tax" || operationType == "TaxDividend" || operationType == "Dividend"){
+      totalQuantity = '-'
+      weigthedPrice = '-'
+    }
+    var ticker
+    if (!figi){
+      ticker = ""
+    } else {
+      var ticker = tinkoffClient.getTickerByFigi(figi)
+    }
+    values.push([isoToDate(date), ticker, operationType, totalQuantity, weigthedPrice, com_val, payment-com_val, currency])
+  }
+  return values
+}
+
+function getDivs(ticker, from, to) {
+  const figi = tinkoffClient.getFIGIbyTicker(ticker)
+  if (!from) {
+    from = TRADING_START_AT.toISOString()
+  }
+  if (!to) {
+    const now = new Date()
+    to = new Date(now + MILLIS_PER_DAY)
+    to = to.toISOString()
+  }
+  const operations = tinkoffClient.getOperations(from, to, figi)
+  const values = []
+  for (let i=operations.length-1; i>=0; i--) {
+    const {operationType, status, trades, date, currency, figi, commission, taxDividend, payment} = operations[i]
+    if (operationType == "BrokerCommission" || status == "Decline" || operationType == "Buy" || operationType == "Sell")
+      continue
+    //одни дивы без дат и валюты
+    values.push([payment])
+  }
+  return values
+}
+
+function getDivsGS(from, to) {
+  if (!from) {
+    from = TRADING_START_AT.toISOString()
+  }
+  if (!to) {
+    const now = new Date()
+    to = new Date(now + MILLIS_PER_DAY)
+    to = to.toISOString()
+  }
+  const operations = tinkoffClient.getAll(from, to)
+  const values = []
+  for (let i=operations.length-1; i>=0; i--) {
+    const {operationType, status, trades, date, currency, figi, commission, taxDividend, payment} = operations[i]
+    if (operationType == "BrokerCommission" || status == "Decline" || operationType == "Buy" || operationType == "Sell" || operationType == "PayIn" || operationType == "PayOut" || operationType == "MarginCommission" || operationType == "Sell" || operationType == "Tax" || operationType == "TaxBack" || operationType == "ServiceCommission")
+      continue
+    //одни дивы без дат и валюты
+    values.push([figi, payment, currency])
+  }
+  return values
+}
+
+function getID(){
+  const users = tinkoffClient.getIISid()
+  for (let i=users.length-1; i>=0; i--) {
+    const {brokerAccountId, brokerAccountType} = users [i]
+    if (brokerAccountType == "TinkoffIis")
+      IISid = brokerAccountId
+  }
+  return IISid
+}
+
+function getIDs(){
+  const users = tinkoffClient.getIISid()
+  for (let i=users.length-1; i>=0; i--) {
+    const {brokerAccountId, brokerAccountType} = users [i]
+        IISid = brokerAccountId
+  }
+  return IISid
+}
+
+function getAllTradesIIS(from,to){
+  IISid = getID()
+  if (!from){
+    from = TRADING_START_AT.toISOString()
+  }else{
+    from = from.toISOString()
+  }
+  if (!to){
+    to = new Date(new Date() + MILLIS_PER_DAY).toISOString()
+  }else{
+    to = to.toISOString()
+  }
+  const operations = tinkoffClient.getAllIIS (from, to, IISid)
+  const values = []
+  values.push(["Дата","Тикер","Тип","Кол-во","Цена за 1","Итого","Валюта"])
+  for (let i=operations.length-1; i>=0; i--) {
+    const {operationType, status, trades, date, currency, figi, commission, payment} = operations[i]
+    if (operationType == "BrokerCommission" || operationType == "PayIn" || operationType == "PayOut" || status == "Decline")
+      continue
+    // если нужно отобразить комиссию брокера (BrokerCommission), пополнение (PayIn) или вывод (PayOut) средств со счета, удалите ненужный вариант. Например, если Вы хотите видеть отображение вывода средств со счёта, удалите " operationType == "PayIn" ||" из строки выше
+    let [totalQuantity, totalSum, weigthedPrice] = _calculateTrades(trades)
+    if (operationType == "Sell") {
+      totalQuantity = -totalQuantity
+      totalSum = -totalSum
+      commission.value = -commission.value
+    }
+    if (operationType == "Tax" || operationType == "TaxDividend" || operationType == "Dividend"){
+      totalQuantity = '-'
+      weigthedPrice = '-'
+    }
+    var ticker
+    if (!figi){
+      ticker = ""
+    } else {
+      var ticker = tinkoffClient.getTickerByFigi(figi)
+    }
+    values.push([isoToDate(date), ticker, operationType, totalQuantity, weigthedPrice, payment, currency])
+  }
+  return values
+}
+
+function getPortfolio(refresh){
+  const portfolio = tinkoffClient.getPort()
+  const values = []
+  values.push(["Тикер", "Название", "Кол-во", "Покупка", "Текущая", "Валюта"])
+  for (let i=portfolio.length-1; i>=0; i--) {
+    const {ticker, name, balance, averagePositionPrice, expectedYield} = portfolio [i]
+    buy_price = averagePositionPrice.value * balance
     values.push([
-      id, isoToDate(date), operationType, ticker, totalQuantity, weigthedPrice, currency, totalSum, com_val
+      ticker, name, balance, buy_price, buy_price + expectedYield.value, averagePositionPrice.currency
     ])
   }
   return values
 }
 
-/**
- * Получение портфеля
- * @return {Array}     Массив с результатами
- * @customfunction
- */
-function getPortfolio() {
-  const portfolio = tinkoffClient.getPortfolio()
+function getPortfolioGS(refresh){
+  const portfolio = tinkoffClient.getPort()
   const values = []
-  values.push(["Тикер","Название","Тип","Кол-во","Ср.цена покупки","Ст-ть покупки","Доходность","Тек.ст-ть","НКД","Валюта"])
-  for (let i=0; i<portfolio.length; i++) {
-    let {ticker, name, instrumentType, balance, averagePositionPrice, averagePositionPriceNoNkd, expectedYield} = portfolio [i]
-    let NKD=null
-    if (averagePositionPriceNoNkd){
-      NKD = averagePositionPrice.value - averagePositionPriceNoNkd.value
-      averagePositionPrice.value = averagePositionPriceNoNkd.value
-    }
-
+  //values.push(["Тикер", "Название", "Кол-во", "Валюта", "Покупка", "Текущая"])
+  for (let i=portfolio.length-3; i>=0; i--) {
+    const {ticker, name, balance, averagePositionPrice, expectedYield, instrumentType, figi} = portfolio [i]
+    //if (instrumentType == "Bond") //проверка на бонды
+    //continue
+    buy_price = averagePositionPrice.value * balance
+    last_price = (buy_price + expectedYield.value) / balance
     values.push([
-      ticker, name, instrumentType, balance, averagePositionPrice.value, averagePositionPrice.value * balance, expectedYield.value, averagePositionPrice.value * balance + expectedYield.value, NKD, averagePositionPrice.currency
+      ticker, name, balance, averagePositionPrice.currency, averagePositionPrice.value, buy_price, last_price, buy_price + expectedYield.value,instrumentType 
+    ])
+  }
+  return values
+}
+
+function getCurrencies(refresh){
+  const values = []
+  const portcur = tinkoffClient.getCur()
+  for (let i=portcur.length-1; i>=0; i--) {
+    const {currency, balance} = portcur [i]
+    values.push([currency,balance])
+    }
+  return values
+}
+
+function getCurrenciesGS(refresh){
+  const values = []
+  const portcur = tinkoffClient.getCur()
+  for (let i=portcur.length-1; i>=0; i--) {
+    const {currency, currency1, balance, currency3} = portcur [i]
+    values.push([currency,currency,balance,currency])
+    }
+  return values
+}
+
+function getUSDval(refresh){
+  return tinkoffClient.usdval()
+}
+
+function getEURval(refresh){
+  return tinkoffClient.eurval()
+}
+
+function getInfoGS(refresh){
+  return tinkoffClient.getinfo()
+}
+
+function getIISPort(refresh){
+  const users = tinkoffClient.getIISid()
+  for (let i=users.length-1; i>=0; i--) {
+    const {brokerAccountId, brokerAccountType} = users [i]
+    if (brokerAccountType == "TinkoffIis")
+      IISid = brokerAccountId
+  }
+  const portfolio = tinkoffClient.getIIS(IISid)
+  const values = []
+  values.push(["Тикер", "Название", "Кол-во", "Покупка", "Текущая", "Валюта"])
+  for (let i=portfolio.length-1; i>=0; i--) {
+    const {ticker, name, balance, averagePositionPrice, expectedYield} = portfolio [i]
+    buy_price = averagePositionPrice.value * balance
+    values.push([
+      ticker, name, balance, buy_price, buy_price + expectedYield.value, averagePositionPrice.currency
     ])
   }
   return values
@@ -341,30 +506,28 @@ function TI_GetLastPrice(ticker) {
 
 function TI_GetAccounts() {
   const data = tinkoffClientV2._GetAccounts()
-
   return data.accounts[0].id //FIXME!!!
 }
 
 function TI_GetPortfolio(accountId) {
   const portfolio = tinkoffClientV2._GetPortfolio(accountId)
   const values = []
-  values.push(["FIGI","Название","Тип","Кол-во","Ср.цена покупки","Валюта","Доходность","Тек.цена","Валюта","НКД","Валюта"])
+  values.push(["Тикер","Название","Тип","Кол-во","Ср.цена покупки","Cр.сумма покупки","Тек.цена","Тек.Стоимость","НКД","Доходность"/*,"Валюта"*/])
   for (let i=0; i<portfolio.positions.length; i++) {
     const [ticker,name] = _GetTickerNameByFIGI(portfolio.positions[i].figi)
     values.push([
       ticker,
       name,
       portfolio.positions[i].instrumentType,
-      Number(portfolio.positions[i].quantity.units) + portfolio.positions[i].quantity.nano/1000000000,
-      Number(portfolio.positions[i].averagePositionPrice.units) + portfolio.positions[i].averagePositionPrice.nano/1000000000,
-      portfolio.positions[i].averagePositionPrice.currency,
-      Number(portfolio.positions[i].expectedYield.units) + portfolio.positions[i].expectedYield.nano/1000000000,
-      Number(portfolio.positions[i].currentPrice.units) + portfolio.positions[i].currentPrice.nano/1000000000,
-      portfolio.positions[i].currentPrice.currency,
-      Number(portfolio.positions[i].currentNkd.units) + portfolio.positions[i].currentNkd.nano/1000000000,
-      portfolio.positions[i].currentNkd.currency
+      Number(portfolio.positions[i].quantity.units) + portfolio.positions[i].quantity.nano/1000000000,//колво
+      Number(portfolio.positions[i].averagePositionPrice.units) + portfolio.positions[i].averagePositionPrice.nano/1000000000,//Ср.цена покупки
+      (Number(portfolio.positions[i].averagePositionPrice.units) + portfolio.positions[i].averagePositionPrice.nano/1000000000) * (Number(portfolio.positions[i].quantity.units) + portfolio.positions[i].quantity.nano/1000000000),//Cр.сумма покупки
+      Number(portfolio.positions[i].currentPrice.units) + portfolio.positions[i].currentPrice.nano/1000000000,//Тек.Цена
+      (Number(portfolio.positions[i].quantity.units) + portfolio.positions[i].quantity.nano/1000000000) * (Number(portfolio.positions[i].currentPrice.units) + portfolio.positions[i].currentPrice.nano/1000000000),//Тек.Стоимость
+      Number(portfolio.positions[i].currentNkd.units) + portfolio.positions[i].currentNkd.nano/1000000000,//НКД
+      Number(portfolio.positions[i].expectedYield.units) + portfolio.positions[i].expectedYield.nano/1000000000,//Доходность
+      //portfolio.positions[i].currentNkd.currency //?
     ])
   }
   return values
 }
-
